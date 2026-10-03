@@ -1,0 +1,1096 @@
+Day 1–7 should be treated as a foundation sprint, not a BitcoinII port yet. The goal is to finish the week with a small, buildable QTC protocol/CLI that can create a chain, create UTXOs, use SHA-256 PoW, and establish the interface that your existing PQ wallet will eventually use.
+
+Since you're working primarily on Windows/WSL, I'll structure this so you can build it incrementally from the terminal.
+
+QTC Day 1–7 Sprint
+The Week 1 objective
+
+By the end of Day 7, we want this:
+
+                    QTC-Wallet
+                        │
+                        │  later
+                        ▼
+                 ┌──────────────┐
+                 │   QTC RPC    │
+                 └──────┬───────┘
+                        │
+              ┌─────────▼─────────┐
+              │    QTC CLI Node   │
+              ├───────────────────┤
+              │ Blockchain        │
+              │ UTXO Set          │
+              │ Transactions      │
+              │ SHA-256 PoW       │
+              │ Consensus         │
+              │ Address handling  │
+              └───────────────────┘
+
+We are NOT trying to build the entire cryptocurrency this week.
+
+We're creating the foundation that everything else plugs into.
+
+DAY 1 — Create the QTC Protocol Project
+Objective
+
+Create a completely independent repository/project for the QTC blockchain protocol.
+
+Do not copy the entire PQNativeConcept repository into it.
+
+Do not modify BitcoinII yet.
+
+Do not start with the wallet.
+
+We want a clean laboratory.
+
+1. Create the project
+
+In WSL:
+
+cd ~
+mkdir -p QTC
+cd QTC
+
+mkdir -p qtc-protocol
+cd qtc-protocol
+
+mkdir -p include
+mkdir -p src
+mkdir -p tests
+mkdir -p data
+mkdir -p docs
+
+Then:
+
+touch README.md
+touch .gitignore
+
+Your structure should be:
+
+qtc-protocol/
+├── include/
+├── src/
+├── tests/
+├── data/
+├── docs/
+├── README.md
+└── .gitignore
+2. Create the initial modules
+
+Let's establish the architecture immediately:
+
+touch include/block.h
+touch include/transaction.h
+touch include/utxo.h
+touch include/address.h
+touch include/consensus.h
+touch include/crypto.h
+touch include/chain.h
+
+touch src/block.cpp
+touch src/transaction.cpp
+touch src/utxo.cpp
+touch src/address.cpp
+touch src/consensus.cpp
+touch src/crypto.cpp
+touch src/chain.cpp
+
+touch src/main.cpp
+
+Now:
+
+qtc-protocol/
+│
+├── include/
+│   ├── block.h
+│   ├── transaction.h
+│   ├── utxo.h
+│   ├── address.h
+│   ├── consensus.h
+│   ├── crypto.h
+│   └── chain.h
+│
+├── src/
+│   ├── block.cpp
+│   ├── transaction.cpp
+│   ├── utxo.cpp
+│   ├── address.cpp
+│   ├── consensus.cpp
+│   ├── crypto.cpp
+│   ├── chain.cpp
+│   └── main.cpp
+│
+├── tests/
+├── data/
+├── docs/
+└── README.md
+
+This is our QTC protocol laboratory.
+
+3. Initialize Git
+git init
+git add .
+git commit -m "Initial QTC protocol architecture"
+
+If you're going to put it on GitHub later:
+
+git branch -M main
+
+Don't worry about the remote yet.
+
+4. Define the first QTC constants
+
+Create:
+
+include/consensus.h
+
+Start with the conceptual constants:
+
+#pragma once
+
+#include <cstdint>
+
+namespace qtc {
+
+constexpr uint64_t COIN = 100000000;
+
+constexpr uint64_t MAX_MONEY =
+    21000000ULL * COIN;
+
+constexpr uint32_t BLOCK_INTERVAL = 600;
+
+// Initial development block size.
+// Final production value should be frozen later.
+constexpr uint32_t MAX_BLOCK_SIZE = 32 * 1024 * 1024;
+
+constexpr uint32_t POW_ALGORITHM_SHA256 = 1;
+
+}
+Important
+
+We're deliberately setting:
+
+21,000,000 QTC
+
+and:
+
+10-minute target blocks
+
+and initially leaving room for the larger block architecture we've discussed.
+
+The 32 MB value is a development target, not something we should consider permanently frozen yet.
+
+5. Day 1 success condition
+
+At the end of Day 1, you should have:
+
+[✓] Clean QTC project
+[✓] Git repository
+[✓] Blockchain modules
+[✓] 21M monetary constant
+[✓] 10-minute block target
+[✓] SHA-256 PoW identifier
+[✓] Larger block-size target
+
+Then commit:
+
+git add .
+git commit -m "QTC consensus foundation"
+DAY 2 — Build the Block
+
+Now we're going to make QTC actually create blocks.
+
+Goal
+
+Get this working:
+
+./qtc
+
+and eventually:
+
+QTC Protocol Node
+
+Network: regtest
+Height: 0
+Genesis: ...
+6. Define the block
+
+include/block.h
+
+Conceptually:
+
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace qtc {
+
+struct BlockHeader {
+    uint32_t version;
+    std::string previous_block_hash;
+    std::string merkle_root;
+    uint64_t timestamp;
+    uint32_t difficulty_bits;
+    uint64_t nonce;
+};
+
+struct Block {
+    BlockHeader header;
+    std::vector<std::string> transactions;
+};
+
+}
+
+This is intentionally simple.
+
+We're not yet trying to reproduce Bitcoin Core's internal serialization architecture.
+
+We're establishing the QTC protocol model.
+
+7. Create a hash function
+
+For the first prototype:
+
+block header
+      ↓
+SHA-256
+      ↓
+hash
+
+Eventually:
+
+SHA256(
+    SHA256(
+        serialized header
+    )
+)
+
+because we're intentionally following Bitcoin's SHA-256 PoW model.
+
+8. Create the genesis block
+
+Your first executable should generate something like:
+
+QTC REGTEST
+
+Height: 0
+Previous: 0000000000000000000000000000000000000000000000000000000000000000
+
+Genesis Hash:
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+Don't worry about the final mainnet genesis.
+
+We're making:
+
+REGTEST GENESIS
+
+first.
+
+9. Day 2 success condition
+
+You should be able to:
+
+./qtc
+
+and see:
+
+QTC Node
+Network: regtest
+Height: 0
+Genesis block created
+Genesis hash: ...
+
+Then:
+
+git add .
+git commit -m "QTC block and genesis implementation"
+DAY 3 — Transactions + UTXO
+
+This is probably the most important day of the entire week.
+
+We're going to establish how QTC actually moves money.
+
+10. Create the UTXO model
+
+include/utxo.h
+
+Conceptually:
+
+struct OutPoint {
+    std::string txid;
+    uint32_t vout;
+};
+
+struct UTXO {
+    OutPoint outpoint;
+    uint64_t amount;
+    std::string owner;
+};
+
+Then:
+
+TXID + VOUT
+     ↓
+   UTXO
+     ↓
+amount + owner
+11. Create transaction structures
+Transaction
+│
+├── version
+├── inputs
+│   ├── previous TXID
+│   ├── previous VOUT
+│   └── sequence
+│
+├── outputs
+│   ├── amount
+│   └── address/commitment
+│
+└── locktime
+
+For now, keep the PQ witness component modular.
+
+We're going to integrate the actual wallet cryptography shortly.
+
+12. Create the first transaction manually
+
+Before the wallet gets involved, create a test transaction:
+
+TX1
+
+Input:
+    Genesis/coinbase UTXO
+
+Output:
+    50 QTC → Alice
+
+Then your UTXO set becomes:
+
+TX1:0
+50 QTC
+Alice
+
+Now the blockchain understands ownership.
+
+13. Implement balance calculation
+
+Do not create:
+
+Alice.balance = 50
+
+Instead:
+
+UTXO database
+
+TX1:0
+50 QTC
+Alice
+
+Then:
+
+getBalance(Alice)
+
+does:
+
+sum(Alice's unspent outputs)
+
+Result:
+
+50 QTC
+
+This distinction will save us a lot of problems later.
+
+14. Create Alice → Bob
+
+Create:
+
+Alice
+50 QTC
+
+and:
+
+Bob
+0 QTC
+
+Then construct:
+
+Alice
+   │
+   │ 10 QTC
+   ▼
+Bob
+
+Outputs:
+
+Bob: 10 QTC
+Alice: 39.9 QTC
+Fee: 0.1 QTC
+
+This doesn't have to be signed yet.
+
+We're proving the UTXO mechanics first.
+
+15. Day 3 success condition
+
+You should be able to prove:
+
+50 QTC
+   ↓
+Alice
+
+Alice sends 10 QTC
+   ↓
+
+39.9 QTC
+   ↓
+Alice
+
+10 QTC
+   ↓
+Bob
+
+And:
+
+Alice's UTXO = spent
+Bob's UTXO = unspent
+
+Commit:
+
+git add .
+git commit -m "QTC transaction and UTXO model"
+DAY 4 — SHA-256 Mining
+
+Now we add your new mining direction.
+
+QTC v1
+SHA-256 PoW
+
+Not ShockWave.
+
+Not qRandomX.
+
+Not RandomX.
+
+Not Cuckoo.
+
+SHA-256.
+
+16. Build a tiny CPU miner
+
+Start with:
+
+Block Header
+     ↓
+serialize
+     ↓
+SHA256
+     ↓
+SHA256
+     ↓
+compare target
+     ↓
+valid?
+
+Pseudo-code:
+
+while (true) {
+
+    block.header.nonce++;
+
+    auto hash =
+        double_sha256(
+            serialize(block.header)
+        );
+
+    if (hash <= target) {
+        return block;
+    }
+}
+17. Make regtest difficulty extremely easy
+
+For example, use a target that allows your laptop CPU to find blocks almost instantly.
+
+We don't care about realistic mining difficulty yet.
+
+We're testing:
+
+nonce
+ ↓
+hash
+ ↓
+target
+ ↓
+valid block
+18. Mine the first QTC blocks
+
+Your CLI should eventually support:
+
+./qtc mine
+
+Output:
+
+Mining block...
+
+Block found!
+Height: 1
+Nonce: 381
+Hash: ...
+
+Then:
+
+./qtc mine
+
+again:
+
+Height: 2
+
+Eventually:
+
+Height: 10
+19. Validate the chain
+
+Now deliberately change a block.
+
+For example:
+
+Block 3
+
+change its transaction.
+
+Then:
+
+./qtc validatechain
+
+should say:
+
+INVALID
+
+Block 3:
+Merkle root mismatch
+
+That's our first real consensus test.
+
+20. Day 4 success condition
+
+You should have:
+
+Genesis
+   ↓
+Block 1
+   ↓
+Block 2
+   ↓
+Block 3
+   ↓
+...
+
+with:
+
+SHA256d
+
+validating each block.
+
+Commit:
+
+git add .
+git commit -m "QTC SHA-256 proof of work"
+DAY 5 — PQ Wallet Integration
+
+This is the day where your existing QTC wallet finally enters the picture.
+
+We don't want to rewrite it.
+
+We want to establish compatibility.
+
+21. First define the wallet/node boundary
+
+Architecture:
+
+┌──────────────────────┐
+│     QTC-Wallet       │
+│                      │
+│ ML-DSA               │
+│ ML-KEM                │
+│ qtc1 addresses       │
+│ key management       │
+└──────────┬───────────┘
+           │
+           │ RPC / JSON
+           ▼
+┌──────────────────────┐
+│      QTC Node        │
+│                      │
+│ Blockchain           │
+│ UTXO                 │
+│ Mempool               │
+│ Consensus             │
+│ SHA-256 PoW           │
+└──────────────────────┘
+22. First wallet command
+
+The wallet should be able to ask:
+
+getnewaddress
+
+Node responds:
+
+{
+  "address": "qtc1..."
+}
+
+Or, more appropriately for your architecture, the wallet can generate the address locally and give the node the address/locking commitment when requesting UTXOs.
+
+The important part is that the node doesn't need the wallet's private key.
+
+23. Address compatibility test
+
+Take one address generated by your current QTC wallet.
+
+For example:
+
+qtc1xxxxxxxx
+
+Give it to QTC Core.
+
+QTC Core must determine:
+
+valid address?
+network?
+version?
+witness/program?
+
+If the current wallet uses a specific custom encoding, we need to implement that exact format, not invent another QTC address format.
+
+This is where your existing QTC-Wallet becomes a specification.
+
+24. ML-DSA test
+
+Take the wallet's signing functionality.
+
+Generate:
+
+message
+public key
+signature
+
+Then QTC Core performs:
+
+ML-DSA verify(
+    public_key,
+    message,
+    signature
+)
+
+Expected:
+
+VALID
+
+Then deliberately modify the message:
+
+INVALID
+
+This is an extremely important milestone.
+
+25. Day 5 success condition
+
+You should be able to say:
+
+QTC-Wallet
+     │
+     ├── generates PQ keys
+     ├── generates qtc1 address
+     ├── signs message
+     │
+     ▼
+QTC Protocol
+     │
+     ├── recognizes address
+     └── verifies signature
+
+Commit:
+
+git add .
+git commit -m "QTC PQ wallet compatibility foundation"
+DAY 6 — RPC + Send/Receive
+
+Now we're going to make your wallet actually move QTC.
+
+This is the day that directly addresses your current problem.
+
+26. Implement the minimum RPC interface
+
+Start with:
+
+getblockchaininfo
+getblock
+getblockhash
+
+getbalance
+listunspent
+
+getrawtransaction
+sendrawtransaction
+
+getmempoolinfo
+getrawmempool
+
+getblocktemplate
+submitblock
+
+Don't implement 100 RPC calls.
+
+Implement only what we need.
+
+27. Create Alice
+
+Your test environment:
+
+Alice Wallet
+
+Address:
+
+qtc1alice...
+
+Mine:
+
+qtc-cli mine 101 qtc1alice...
+
+Alice:
+
+50 QTC
+28. Create Bob
+Bob Wallet
+
+Address:
+
+qtc1bob...
+
+Balance:
+
+0 QTC
+29. Send the first actual transaction
+
+Alice:
+
+send 10 QTC
+
+Node:
+
+verify signature
+       ↓
+verify UTXO
+       ↓
+verify amounts
+       ↓
+calculate fee
+       ↓
+add to mempool
+
+Output:
+
+TXID:
+abcdef123...
+30. Check mempool
+qtc-cli getrawmempool
+
+Should show:
+
+abcdef123...
+
+Then:
+
+qtc-cli gettransaction abcdef123...
+
+should show:
+
+status: unconfirmed
+31. Mine the transaction
+qtc-cli mine 1
+
+Now:
+
+transaction
+    ↓
+block
+    ↓
+confirmed
+
+Bob:
+
+qtc-cli getbalance bob
+
+Expected:
+
+10 QTC
+
+This is your first complete QTC payment.
+
+32. Day 6 success condition
+
+This is the milestone I want you to aim for:
+
+QTC-Wallet A
+      │
+      │ ML-DSA signed transaction
+      ▼
+QTC Node
+      │
+      ├── validate
+      ├── mempool
+      │
+      ▼
+SHA-256 Miner
+      │
+      ▼
+Block
+      │
+      ▼
+QTC Node
+      │
+      ▼
+QTC-Wallet B
+      │
+      ▼
+10 QTC received
+
+Commit:
+
+git add .
+git commit -m "QTC transaction RPC and wallet transfer"
+DAY 7 — Integration Test Day
+
+Don't add major new features on Day 7.
+
+Day 7 is about proving everything we've built.
+
+33. Run the complete test
+
+Start with:
+
+QTC Node
+
+Then:
+
+Wallet A
+Wallet B
+
+Run:
+
+Genesis
+ ↓
+Mine
+ ↓
+UTXO
+ ↓
+Wallet A
+ ↓
+Sign
+ ↓
+Transaction
+ ↓
+Mempool
+ ↓
+SHA-256 mining
+ ↓
+Block
+ ↓
+Confirmation
+ ↓
+Wallet B
+34. Break It on Purpose
+
+This is extremely important.
+
+Try:
+
+Test 1 — Bad signature
+
+Modify one byte.
+
+Expected:
+
+REJECTED
+Test 2 — Double spend
+
+Spend the same UTXO twice.
+
+Expected:
+
+REJECTED
+Test 3 — Fake amount
+
+Try to spend:
+
+50 QTC
+
+from a:
+
+10 QTC UTXO
+
+Expected:
+
+REJECTED
+Test 4 — Fake block
+
+Change the previous block hash.
+
+Expected:
+
+REJECTED
+Test 5 — Bad PoW
+
+Change the nonce after finding a valid block.
+
+Expected:
+
+REJECTED
+Test 6 — Restart
+
+Stop node.
+
+Restart node.
+
+Expected:
+
+same chain
+same UTXOs
+same transactions
+same balances
+Your Day 7 Definition of Done
+
+I would not move to BitcoinII until you can check all of these:
+
+[ ] QTC project builds cleanly
+[ ] Genesis block works
+[ ] Blocks link correctly
+[ ] SHA-256 PoW works
+[ ] Difficulty target works
+[ ] Transactions serialize
+[ ] Transactions deserialize
+[ ] UTXOs are created
+[ ] UTXOs are spent
+[ ] Double spends are rejected
+[ ] Balances are derived from UTXOs
+[ ] qtc1 addresses work
+[ ] ML-DSA signatures verify
+[ ] Invalid signatures fail
+[ ] Mempool works
+[ ] Blocks contain transactions
+[ ] Mining confirms transactions
+[ ] Wallet A can send
+[ ] Wallet B can receive
+[ ] Node can restart
+[ ] Chain persists
+[ ] Invalid blocks are rejected
+
+Then:
+
+QTC Protocol v0.1 — Proven
+
+That is when we start looking at the BitcoinII integration.
+
+One thing I want you to do differently this time
+
+Don't write 5,000 lines of code before testing.
+
+Use this cycle:
+
+WRITE
+  ↓
+BUILD
+  ↓
+TEST
+  ↓
+COMMIT
+  ↓
+NEXT COMPONENT
+
+For example:
+
+Block
+ ↓
+build
+ ↓
+test
+ ↓
+commit
+
+Transaction
+ ↓
+build
+ ↓
+test
+ ↓
+commit
+
+UTXO
+ ↓
+build
+ ↓
+test
+ ↓
+commit
+
+SHA-256
+ ↓
+build
+ ↓
+test
+ ↓
+commit
+
+That way, if Day 5 breaks something, we know exactly where it happened.
+
+And I recommend one more thing before you start
+
+Don't manually write all of Day 1's code yet.
+
+Because you already have three important sources we can use:
+
+Your clean BitcoinII-Core build
+Your current QTC-Wallet
+Your existing PQNativeConcept
+
+The right next step is to establish a QTC Protocol Specification v0.1 from those three sources before we start implementing the new CLI.
+
+That specification should explicitly freeze:
+
+QTC v0.1
+│
+├── Monetary policy
+│   └── 21,000,000 QTC
+│
+├── Block
+│   ├── header
+│   ├── timestamp
+│   ├── Merkle root
+│   └── SHA-256 PoW
+│
+├── Transaction
+│   ├── inputs
+│   ├── outputs
+│   └── PQ witness
+│
+├── UTXO
+│
+├── qtc1 address
+│
+├── ML-DSA
+│
+├── ML-KEM
+│
+├── Block size
+│
+├── Fees
+│
+├── Coinbase
+│
+└── RPC
+
+I would do that before you write the Day 1 implementation, because it gives us a target to build against rather than discovering the protocol while coding.
+
+If you upload the current QTC-Wallet repository/archive and the clean BitcoinII-Core source you're using, I can walk you through Day 1 file-by-file and establish exactly what should be borrowed, rewritten, or left out from the old QTC implementation.

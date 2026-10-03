@@ -1,0 +1,1280 @@
+Before I begin building I want to abstract the blockchain and place it into a CLI version for testing. I want to make sure the blockchain functions properly, transactions function properly and I want to make sure that the blockchain can interact with the CLI wallets I have built. The CLI wallets function properly but I have not been able to send or receive any QTC and I have not created a testnet QTC. I need a plan to do this
+
+Yes. I would change the plan slightly from the previous roadmap: do not start by modifying the full node, wallet, P2P, mining, and consensus all at once. Build a small QTC protocol/chain simulator + CLI node first, get your existing PQ CLI wallets talking to it, and only then move the proven pieces into the BitcoinII-Core fork.
+
+That gives you a much safer development sequence.
+
+Bitcoin's own development model strongly supports this approach: regtest creates a private chain where you control block production, and Bitcoin's functional-test framework is designed around repeatedly creating nodes, blocks, transactions, and wallet interactions in isolated environments.
+
+QTC New Development Plan
+The goal
+
+You want to get from:
+
+QTC-Wallets
+     |
+     X
+     |   ← currently no QTC blockchain to talk to
+     |
+PQNativeConcept
+
+to:
+
+             QTC CLI Wallet
+                  |
+             JSON/RPC/CLI
+                  |
+            QTC Test Node
+                  |
+       +----------+----------+
+       |                     |
+   Blockchain            Mempool
+       |                     |
+   Blocks/UTXO          Transactions
+       |
+   SHA-256 PoW
+       |
+   QTC Consensus
+
+And eventually:
+
+                 QTC Mainnet
+                     |
+              BitcoinII Core
+                     |
+       +-------------+-------------+
+       |             |             |
+   SHA-256        PQ Tx          Wallet
+     PoW         Security          |
+       |             |             |
+       |        ML-DSA/ML-KEM      |
+       |             |             |
+       +-------------+-------------+
+                     |
+                 qtc1 address
+
+The first objective isn't mining.
+
+The first objective is:
+
+Can QTC create a valid chain, create UTXOs, create PQ transactions, validate those transactions, move coins between your CLI wallets, and persist/reload the chain correctly?
+
+Once that works, mining becomes much easier.
+
+1. Important distinction: CLI blockchain vs testnet
+
+I would actually create three environments, not one.
+
+Environment A — QTC Simulator
+
+Extremely small.
+
+Used to test:
+
+blocks
+transactions
+UTXOs
+signatures
+addresses
+serialization
+hashing
+balances
+chain validation
+
+No networking initially.
+
+Environment B — QTC Regtest
+
+Actual executable QTC node.
+
+Used to test:
+
+multiple nodes
+P2P
+mining
+mempool
+transactions
+wallet interaction
+chain synchronization
+
+This is analogous to Bitcoin Core's regtest model, where you control block creation rather than waiting for network mining.
+
+Environment C — QTC Testnet
+
+Public or semi-public.
+
+Used later for:
+
+external nodes
+real networking
+mining
+wallet compatibility
+explorer
+stress testing
+independent testers
+
+Do not start with public testnet.
+
+2. The QTC CLI Blockchain should be extremely small
+
+I would build this first:
+
+qtc-cli
+│
+├── chain
+│   ├── genesis
+│   ├── addblock
+│   ├── getblock
+│   ├── getblockchaininfo
+│   └── validatechain
+│
+├── tx
+│   ├── create
+│   ├── sign
+│   ├── decode
+│   ├── validate
+│   └── broadcast
+│
+├── wallet
+│   ├── import
+│   ├── address
+│   ├── balance
+│   ├── utxos
+│   └── send
+│
+├── mining
+│   ├── gettemplate
+│   ├── mine
+│   └── submit
+│
+└── node
+    ├── start
+    ├── status
+    └── stop
+
+But don't implement all of those immediately.
+
+3. Phase 1 — Build the QTC Protocol Core
+
+Before BitcoinII.
+
+Create a standalone project:
+
+QTC-Protocol/
+│
+├── include/
+│   ├── block.h
+│   ├── transaction.h
+│   ├── utxo.h
+│   ├── wallet_interface.h
+│   ├── address.h
+│   ├── consensus.h
+│   └── crypto.h
+│
+├── src/
+│   ├── block.cpp
+│   ├── transaction.cpp
+│   ├── utxo.cpp
+│   ├── address.cpp
+│   ├── consensus.cpp
+│   └── crypto.cpp
+│
+├── tests/
+│
+└── qtc-cli.cpp
+
+The purpose is to define what QTC actually is before embedding it into a massive blockchain codebase.
+
+4. First thing to implement: QTC's data model
+
+Start with the basic objects.
+
+Block
+QTCBlock
+├── version
+├── previous_block_hash
+├── merkle_root
+├── timestamp
+├── difficulty_bits
+├── nonce
+└── transactions[]
+
+This follows the basic Bitcoin architecture: blocks link through the previous block hash, and the Merkle root commits to the transactions.
+
+5. Transaction
+
+Define:
+
+QTCTransaction
+├── version
+├── inputs[]
+├── outputs[]
+├── locktime
+└── witness/signature data
+
+Inputs:
+
+previous_txid
+previous_vout
+sequence
+unlock/witness data
+
+Outputs:
+
+amount
+script/address commitment
+
+The fundamental model should remain UTXO-based: an output from one transaction becomes an unspent output that a later transaction consumes.
+
+6. UTXO database
+
+This is one of the most important components.
+
+Your blockchain should maintain:
+
+TXID + VOUT
+      ↓
+UTXO
+      |
+      +── amount
+      +── address/commitment
+      +── script
+      +── creation height
+
+Example:
+
+UTXO:
+txid = ABC123
+vout = 0
+
+amount = 50 QTC
+
+owner =
+qtc1....
+
+Then:
+
+Wallet A
+   |
+   | spends UTXO
+   ↓
+Transaction
+   |
+   +------ 40 QTC → Wallet B
+   |
+   +------ 9.9 QTC → Wallet A change
+   |
+   +------ 0.1 QTC → fee
+
+This is the heart of sending/receiving.
+
+7. Don't start with wallet balances
+
+This is important.
+
+Your blockchain should not fundamentally store:
+
+Alan = 500 QTC
+Bob = 100 QTC
+
+Instead:
+
+UTXO set
+
+The wallet calculates:
+
+balance =
+sum(all spendable UTXOs belonging to wallet)
+
+That's much closer to the actual Bitcoin model.
+
+8. Genesis block
+
+Create a special QTC genesis block.
+
+For development:
+
+QTC REGTEST GENESIS
+
+Use an easily recognizable message.
+
+For example:
+
+QTC Testnet Genesis 2026
+
+Don't finalize the eventual mainnet genesis yet.
+
+You should have:
+
+REGTEST
+TESTNET
+MAINNET
+
+with different genesis hashes.
+
+9. Phase 2 — Make transactions work WITHOUT mining
+
+This is where I would focus heavily.
+
+You want to prove:
+
+Wallet A
+   ↓
+create transaction
+   ↓
+sign with PQ key
+   ↓
+serialize
+   ↓
+QTC node
+   ↓
+deserialize
+   ↓
+verify signature
+   ↓
+validate UTXO
+   ↓
+mempool
+
+Don't worry about blocks yet.
+
+10. Connect your existing QTC CLI wallet
+
+This is probably the most important milestone for you.
+
+Your current wallet already works cryptographically.
+
+Therefore:
+
+Do not rewrite the wallet.
+
+Instead create a very simple QTC Core API.
+
+For example:
+
+qtc-cli getnewaddress
+qtc-cli getbalance
+qtc-cli listunspent
+qtc-cli getblockchaininfo
+qtc-cli getblock
+qtc-cli sendrawtransaction
+qtc-cli getrawtransaction
+
+Your existing wallet can communicate through:
+
+HTTP JSON-RPC
+
+or initially:
+
+local JSON files / stdin
+
+I'd choose JSON-RPC because it will translate naturally into the eventual BitcoinII-derived node.
+
+Bitcoin Core itself exposes transaction creation/broadcast functionality through RPC, and its transaction documentation explicitly separates creating/signing a transaction from submitting it to the node.
+
+11. Define the QTC wallet/node contract
+
+This is critical.
+
+Your wallet should not need to know how the blockchain works internally.
+
+Define:
+
+WALLET
+   |
+   | RPC
+   ↓
+NODE
+Wallet asks:
+getbalance
+
+Node responds:
+
+{
+  "confirmed": 100.0,
+  "unconfirmed": 0.0
+}
+Wallet asks:
+listunspent
+
+Node:
+
+[
+  {
+    "txid": "...",
+    "vout": 0,
+    "amount": 100,
+    "address": "qtc1..."
+  }
+]
+Wallet sends:
+sendrawtransaction
+
+Node returns:
+
+{
+  "txid": "..."
+}
+
+That's the interface we want to preserve when we eventually move into BitcoinII.
+
+12. Phase 3 — PQ transaction format
+
+Now integrate the cryptography.
+
+I recommend freezing a first transaction format before attempting fancy witness compression.
+
+For example:
+
+QTC Transaction v1
+
+version
+inputs
+outputs
+locktime
+
+PQ witness:
+    algorithm_id
+    public_key
+    signature
+
+Something like:
+
+algorithm_id = ML-DSA-65
+
+Then:
+
+QTC Core
+   ↓
+extract public key
+   ↓
+extract signature
+   ↓
+construct sighash
+   ↓
+ML-DSA verify
+   ↓
+TRUE/FALSE
+
+This becomes your first real PQ transaction.
+
+13. Don't use Kyber to sign transactions
+
+Keep the distinction clean.
+
+ML-DSA
+transaction ownership
+signature
+verification
+ML-KEM
+key establishment
+encrypted communication
+PQ networking
+
+That will make the architecture much cleaner.
+
+14. Phase 4 — qtc1 addresses
+
+Now connect the wallet's existing address generation.
+
+The test should literally be:
+
+QTC-Wallet
+      |
+      | generate address
+      ↓
+qtc1....
+      |
+      ↓
+QTC Core
+      |
+      | decode address
+      ↓
+witness program
+
+Then create a permanent compatibility test:
+
+seed
+↓
+public key
+↓
+address
+
+with expected values.
+
+For example:
+
+TEST VECTOR #001
+
+seed:
+...
+
+ML-DSA public key:
+...
+
+qtc address:
+qtc1...
+
+The exact values should come from your current wallet implementation rather than inventing new values.
+
+15. Phase 5 — Receive QTC
+
+This should be your first complete end-to-end test.
+
+Wallet A
+qtc-cli wallet create
+
+gets:
+
+qtc1Alice...
+Wallet B
+qtc-cli wallet create
+
+gets:
+
+qtc1Bob...
+
+Then generate test coins.
+
+qtc-cli mine 101 qtc1Alice...
+
+Alice:
+
+balance = 50 QTC
+
+Then:
+
+Alice
+  |
+  | 10 QTC
+  ↓
+Bob
+
+Node:
+
+mempool:
+TX ABC123
+
+Mine:
+
+qtc-cli mine 1
+
+Then:
+
+Alice = 39.9 QTC
+Bob   = 10 QTC
+
+That is your first complete QTC payment.
+
+Bitcoin's regtest model uses essentially this type of controlled mining/testing flow: create a private chain, mine blocks on demand, then test wallet transactions.
+
+16. Phase 6 — Add SHA-256 mining
+
+Only after transactions work.
+
+Your miner should initially be extremely simple:
+
+while true:
+
+    block = get_block_template()
+
+    block.nonce++
+
+    hash =
+        SHA256(
+            SHA256(
+                serialize(block_header)
+            )
+        )
+
+    if hash < target:
+        submit(block)
+
+This is the original Bitcoin-style PoW model you are asking for.
+
+The block header's previous-block hash and Merkle root commit the chain and transaction set, while PoW makes changing historical blocks increasingly costly.
+
+17. Very important: use easy difficulty in CLI development
+
+Don't make the CLI miner fight real difficulty.
+
+Your development chain should have something like:
+
+REGTEST:
+
+difficulty = trivial
+
+So your CPU can find blocks almost instantly.
+
+Later:
+
+TESTNET:
+
+realistic difficulty
+
+Finally:
+
+MAINNET:
+
+production difficulty
+
+This is exactly why regtest is valuable during development.
+
+18. Phase 7 — Build the blockchain validation engine
+
+Now start attacking the chain itself.
+
+Every node should independently verify:
+
+Block
+previous hash valid?
+timestamp valid?
+PoW valid?
+Merkle root valid?
+block size valid?
+transaction count valid?
+Transaction
+inputs exist?
+UTXOs unspent?
+signature valid?
+input value >= output value?
+fee valid?
+no duplicate inputs?
+serialization valid?
+Chain
+genesis valid?
+previous block matches?
+height correct?
+difficulty correct?
+cumulative work correct?
+
+This is where the blockchain becomes a real blockchain rather than a database.
+
+19. Phase 8 — Two-node QTC network
+
+Now run:
+
+QTC Node A
+127.0.0.1:18444
+
+QTC Node B
+127.0.0.1:18445
+
+Connect them:
+
+Node A ←→ Node B
+
+Mine:
+
+Node A
+
+Then verify:
+
+Node B
+
+receives the block.
+
+Bitcoin's functional test infrastructure uses multiple isolated nodes precisely to test propagation and consensus behavior.
+
+20. Then test transactions across nodes
+
+This becomes:
+
+              Node A
+             /      \
+       Wallet A     Node B
+                       |
+                    Wallet B
+
+Alice sends:
+
+10 QTC
+
+Transaction:
+
+Wallet A
+   ↓
+Node A
+   ↓
+P2P
+   ↓
+Node B
+   ↓
+mempool
+
+Mine:
+
+Node B
+
+Then:
+
+Node A
+   ↓
+confirmed
+
+and:
+
+Wallet B
+   ↓
++10 QTC
+
+This is the test that proves your entire architecture is working.
+
+21. Phase 9 — Persistence
+
+Stop both nodes.
+
+Restart them.
+
+Verify:
+
+height unchanged
+balances unchanged
+UTXOs unchanged
+transactions unchanged
+blocks unchanged
+
+Then:
+
+delete node B database
+
+Restart B.
+
+B should synchronize from A.
+
+This is an extremely important test before moving to BitcoinII.
+
+22. Phase 10 — Failure testing
+
+Start deliberately breaking things.
+
+Test:
+
+Invalid signature
+signature modified
+→ REJECT
+Modified transaction
+amount modified
+→ REJECT
+Double spend
+same UTXO twice
+→ REJECT
+Invalid address
+bad checksum
+→ REJECT
+Invalid block
+bad previous hash
+→ REJECT
+Invalid PoW
+bad nonce/hash
+→ REJECT
+Oversized block
+> max block size
+→ REJECT
+Invalid coinbase
+too much reward
+→ REJECT
+
+These tests are more important than adding another sophisticated feature.
+
+23. Phase 11 — Build a QTC Functional Test Suite
+
+I would eventually want:
+
+tests/
+├── test_genesis
+├── test_block
+├── test_pow
+├── test_merkle
+├── test_transaction
+├── test_utxo
+├── test_mempool
+├── test_mldsa
+├── test_mlkem
+├── test_address
+├── test_wallet
+├── test_send
+├── test_receive
+├── test_double_spend
+├── test_reorg
+├── test_persistence
+├── test_p2p
+└── test_sync
+
+Then a single command:
+
+./qtc-test
+
+should produce:
+
+[PASS] Genesis
+[PASS] Block validation
+[PASS] SHA256 PoW
+[PASS] UTXO
+[PASS] ML-DSA
+[PASS] Address
+[PASS] Transaction
+[PASS] Wallet
+[PASS] Send
+[PASS] Receive
+[PASS] Double spend rejection
+[PASS] P2P
+[PASS] Synchronization
+[PASS] Persistence
+
+QTC TEST SUITE: 100% PASS
+24. Only THEN port into BitcoinII-Core
+
+This is the critical change I recommend.
+
+Don't immediately do:
+
+BitcoinII
+   +
+QTC crypto
+   +
+QTC wallet
+   +
+QTC mining
+   +
+QTC P2P
+   +
+QTC addresses
+
+Instead:
+
+QTC Protocol
+       ↓
+PROVEN
+       ↓
+BitcoinII-Core
+       ↓
+integration
+
+The QTC protocol becomes something you can test independently.
+
+25. BitcoinII integration order
+
+Once your CLI chain works:
+
+Step 1
+
+Port:
+
+QTC monetary policy
+Step 2
+
+Port:
+
+QTC genesis
+Step 3
+
+Port:
+
+SHA-256 PoW
+Step 4
+
+Port:
+
+QTC address
+Step 5
+
+Port:
+
+ML-DSA transaction
+Step 6
+
+Port:
+
+QTC wallet interface
+Step 7
+
+Port:
+
+ML-KEM
+
+only where required.
+
+Step 8
+
+Port:
+
+QTC P2P enhancements
+Step 9
+
+Port:
+
+future mining architecture
+
+only after the base chain is stable.
+
+26. Your new QTC architecture
+
+I would now structure the project like this:
+
+QTC/
+│
+├── qtc-protocol/
+│   │
+│   ├── consensus/
+│   ├── blockchain/
+│   ├── transaction/
+│   ├── utxo/
+│   ├── address/
+│   ├── pow/
+│   └── crypto/
+│
+├── qtc-cli/
+│   │
+│   ├── chain
+│   ├── wallet
+│   ├── transaction
+│   ├── mining
+│   └── node
+│
+├── qtc-wallet/
+│   │
+│   └── existing PQ wallet
+│
+├── qtc-tests/
+│
+└── qtc-core/
+        ↓
+   BitcoinII-derived
+   production node
+
+This is much cleaner.
+
+27. The key interface
+
+The most important thing to define now is:
+
+QTC Wallet ↔ QTC Node
+
+I'd make the interface roughly:
+
+getblockchaininfo
+getblock
+getblockhash
+gettransaction
+getrawtransaction
+
+getnewaddress
+validateaddress
+getbalance
+listunspent
+
+createrawtransaction
+signrawtransaction
+sendrawtransaction
+
+getmempoolinfo
+getrawmempool
+
+getblocktemplate
+submitblock
+
+Some names can differ, but keeping a Bitcoin-like RPC vocabulary will make your eventual BitcoinII integration dramatically easier.
+
+28. The first CLI milestone
+
+Don't try to build the entire QTC node.
+
+Your first milestone should literally be:
+
+$ qtc-cli init
+
+QTC chain initialized.
+Network: regtest
+Genesis: ...
+Height: 0
+
+Then:
+
+$ qtc-cli wallet create alice
+
+Wallet created.
+Address: qtc1...
+
+Then:
+
+$ qtc-cli mine 101 qtc1...
+
+Output:
+
+Mining 101 blocks...
+
+Block 1: ...
+Block 2: ...
+...
+Block 101: ...
+
+Balance: 50 QTC
+
+Then:
+
+$ qtc-cli wallet create bob
+Address: qtc1...
+
+Then:
+
+$ qtc-cli send qtc1BOB... 10
+
+Output:
+
+Transaction created
+TXID: abc123...
+Status: mempool
+
+Then:
+
+$ qtc-cli mine 1
+
+Finally:
+
+$ qtc-cli balance bob
+
+10.00000000 QTC
+
+That is the first major QTC victory.
+
+29. Then use your existing wallets
+
+Once the internal CLI wallet flow works, replace the internal wallet with your actual existing QTC CLI wallet.
+
+Test:
+
+QTC-Wallet
+     |
+     | qtc1 address
+     ↓
+QTC CLI Node
+     |
+     | UTXO
+     ↓
+QTC-Wallet
+
+Then:
+
+Wallet A
+   ↓
+sign with actual ML-DSA implementation
+   ↓
+QTC Node
+   ↓
+verify with native QTC implementation
+
+And then reverse it:
+
+Wallet B
+   ↓
+address
+   ↓
+QTC Node
+   ↓
+Wallet B sees UTXO
+
+This will reveal exactly where your current wallet/blockchain incompatibility lies.
+
+30. Your development roadmap now
+
+I'd make the roadmap:
+
+                QTC RESET
+                    │
+                    ▼
+          ┌──────────────────┐
+          │ QTC Protocol CLI │
+          └────────┬─────────┘
+                   │
+        ┌──────────┼──────────┐
+        ▼          ▼          ▼
+      Blocks     UTXOs     Transactions
+        │          │          │
+        └──────────┼──────────┘
+                   ▼
+             PQ Signatures
+                   │
+                   ▼
+             qtc1 Addresses
+                   │
+                   ▼
+             Existing Wallet
+                   │
+                   ▼
+              SHA-256 PoW
+                   │
+                   ▼
+              2-Node Network
+                   │
+                   ▼
+             Full Test Suite
+                   │
+                   ▼
+             REGTEST RELEASE
+                   │
+                   ▼
+          BitcoinII Integration
+                   │
+                   ▼
+             QTC TESTNET
+                   │
+                   ▼
+             MAINNET
+31. What I would NOT build yet
+
+For now, put these in a future/ directory:
+
+qRandomX
+RandomX
+Cuckoo
+PQ Noise
+witness compression
+OP_CAT
+complex script extensions
+advanced mining
+hardware-wallet integration
+explorer
+GUI
+
+Not because they're bad ideas.
+
+Because none of them solves your immediate problem: you currently don't have a proven QTC transaction lifecycle.
+
+Your immediate problem is:
+
+Can a QTC wallet create an address, receive a QTC UTXO, create a transaction spending that UTXO, produce a valid PQ signature, have a QTC node validate it, put it into a block, and have another QTC wallet recognize the resulting UTXO?
+
+That's the foundation.
+
+32. One major change to the previous QTC plan
+
+I would now make SHA-256 the permanent v1 PoW plan, not just a placeholder.
+
+Your original goal makes sense architecturally:
+
+QTC v1
+SHA-256
+     ↓
+existing BTC SHA-256 miners
+     ↓
+launch network
+
+Then if you eventually decide that SHA-256 mining needs to evolve:
+
+QTC v2
+New PoW
+
+The PoW algorithm should therefore receive an explicit protocol/version identifier from the beginning.
+
+For example:
+
+POW_SHA256 = 0x01
+
+Future:
+
+POW_QRANDOMX = 0x02
+
+That keeps the upgrade path clean.
+
+33. The three things I would freeze before writing code
+
+Before you begin the CLI implementation, freeze these three interfaces:
+
+1. Transaction format
+QTC TX v1
+2. Address format
+qtc1...
+3. Wallet ↔ Node RPC
+QTC RPC v1
+
+Everything else can evolve around those.
+
+34. Your first actual development sprint
+
+I would make Sprint 1 only this:
+
+Day 1–2
+
+Create QTC-Protocol
+Genesis
+block structure
+SHA-256 block hashing
+chain storage
+
+Day 3–4
+
+transaction structure
+UTXO set
+transaction validation
+Merkle root
+
+Day 5
+
+ML-DSA transaction signature integration
+signature verification
+
+Day 6
+
+qtc1 address compatibility with your existing wallet
+
+Day 7
+
+CLI wallet/node RPC
+
+Then Sprint 2:
+
+mine
+↓
+receive
+↓
+send
+↓
+sign
+↓
+validate
+↓
+mempool
+↓
+block
+↓
+confirm
+
+Then Sprint 3:
+
+Node A
+↕
+Node B
+
+Then Sprint 4:
+
+existing QTC-Wallet
+↕
+QTC Node
+
+Then—and only then—begin the BitcoinII port.
+
+The end state I recommend
+
+You should eventually be able to run something like:
+
+qtc-node --regtest
+
+and:
+
+qtc-cli createwallet alice
+qtc-cli createwallet bob
+qtc-cli getnewaddress alice
+qtc-cli getnewaddress bob
+qtc-cli mine 101 alice
+qtc-cli getbalance alice
+qtc-cli send alice qtc1... 10
+qtc-cli getrawmempool
+qtc-cli mine 1
+qtc-cli getbalance bob
+
+while your existing PQ CLI wallet can independently generate the same addresses and signatures.
+
+Once that works, you'll have something much more valuable than another partially integrated QTC fork: a small executable specification of the QTC protocol.
+
+Then BitcoinII-Core becomes the production implementation of a protocol you've already proven, rather than the place where you're simultaneously discovering whether the protocol works.
