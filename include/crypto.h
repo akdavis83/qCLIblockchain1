@@ -19,6 +19,18 @@ std::vector<uint8_t> sha256(const uint8_t* data, size_t len);
 std::vector<uint8_t> double_sha256(const std::vector<uint8_t>& data);
 std::vector<uint8_t> double_sha256(const uint8_t* data, size_t len);
 
+// --- SHA3-256 / SHAKE256 ---
+// Backed by the vendored PQClean fips202 implementation, not re-implemented.
+std::vector<uint8_t> sha3_256(const std::vector<uint8_t>& data);
+std::vector<uint8_t> sha3_256(const uint8_t* data, size_t len);
+std::vector<uint8_t> shake256(size_t outlen, const std::vector<uint8_t>& data);
+
+// SHAKE256 over an ordered list of domains absorbed one after another, rather
+// than over their concatenation. Keeps distinct domains from colliding.
+std::vector<uint8_t> shake256_expand(
+    size_t outlen,
+    const std::vector<std::vector<uint8_t>>& parts);
+
 // --- Serialization helpers (little-endian) ---
 std::vector<uint8_t> write_le_u32(uint32_t val);
 std::vector<uint8_t> write_le_u64(uint64_t val);

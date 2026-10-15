@@ -141,6 +141,23 @@ bool UTXOSet::validate_transaction(const Transaction& tx, std::string& error) co
         }
     }
     
+    // 7. A transaction carrying a PQ witness must have that witness verified.
+    // The v1 witness holds one public key and one signature, so it can commit
+    // to only one input; multi-input spends need per-input witnesses.
+    if (tx.sig_algorithm_id != 0) {
+        if (tx.inputs.size() != 1) {
+            error = "Signed transaction has " + std::to_string(tx.inputs.size()) +
+                    " inputs but the v1 witness covers only one";
+            return false;
+        }
+        const UTXO* prev = get_utxo(tx.inputs[0].prevout);
+        auto verified = tx.verify_input(0, prev->script_pubkey, prev->amount);
+        if (!verified.valid) {
+            error = "PQ signature rejected: " + verified.error;
+            return false;
+        }
+    }
+
     // Fee is valid (input_sum - output_sum >= 0)
     return true;
 }

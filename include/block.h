@@ -44,6 +44,9 @@ struct Block {
     // Serialize full block (header + tx count + transactions)
     std::vector<uint8_t> serialize() const;
 
+    // Inverse of serialize(). Throws on malformed input.
+    static Block deserialize(const std::vector<uint8_t>& data);
+
     // Validate the block's PoW
     bool validate_pow() const;
 

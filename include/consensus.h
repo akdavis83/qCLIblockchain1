@@ -9,7 +9,19 @@ namespace qtc {
 constexpr uint64_t COIN = 100000000;              // 1 QTC = 100,000,000 satoshis
 constexpr uint64_t MAX_MONEY = 21000000ULL * COIN; // 21 million QTC cap
 constexpr uint32_t BLOCK_INTERVAL = 600;           // 10-minute target (seconds)
-constexpr uint32_t MAX_BLOCK_SIZE = 32 * 1024 * 1024; // 32 MB development target
+constexpr uint32_t MAX_BLOCK_SIZE = 32 * 1024 * 1024; // 32 MB, raised from 4 MB
+                                     // for the ML-KEM-1024 + ML-DSA-65 key sizes.
+// Everything relevant is stored on-chain today. Witness compression, a
+// truncated address program and the v2 tag are later upgrades, to be applied
+// only when block space actually needs them.
+
+// --- Fees (D1) ---
+// fee = sum(inputs) - sum(outputs). Coinbase is exempt.
+constexpr uint64_t MIN_TX_FEE = 1000; // satoshis; absolute floor for admission
+
+// Mempool ordering and eviction use fee rate in satoshis per serialized byte,
+// so a transaction is never penalised for carrying a larger PQ witness.
+constexpr size_t MEMPOOL_MAX_TRANSACTIONS = 100;
 constexpr uint32_t COINBASE_MATURITY = 100;        // 100 confirmations before spendable
 
 // --- Subsidy ---
@@ -35,9 +47,15 @@ enum class KemAlgorithm : uint8_t {
 };
 
 // --- Witness versions ---
+// Addresses currently carry no version word at all, so there is nothing to tag:
+// the full program is stored as-is. The enumeration is kept for the later
+// upgrades, when block space gets tight — a truncated program and the witness
+// compression scheme (where only a hash is committed on-chain while the full
+// witness is still verified by consensus). Neither is in use today.
 enum class WitnessVersion : uint8_t {
-    V1 = 1,  // Standard PQ wallet (Dilithium pubkey → SHA3-256 → 20 bytes → bech32m)
-    V2 = 2,  // PQ-HD wallet (reserved for future)
+    NONE = 0,   // current: full program, no version word
+    V1 = 1,     // reserved: truncated program
+    V2 = 2,     // reserved: witness compression
 };
 
 // --- Block / Transaction versions ---

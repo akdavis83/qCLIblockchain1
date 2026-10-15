@@ -58,6 +58,46 @@ std::string BlockHeader::hash_hex() const {
 // Block
 // ============================================================
 
+Block Block::deserialize(const std::vector<uint8_t>& data) {
+    Block block;
+    size_t offset = 0;
+    auto need = [&](size_t n) {
+        if (offset > data.size() || n > data.size() - offset) {
+            throw std::runtime_error("block: truncated encoding");
+        }
+    };
+
+    need(80);
+    const uint8_t* raw = data.data();
+    block.header.version = crypto::read_le_u32(raw + offset);
+    offset += 4;
+    block.header.prev_block_hash.assign(raw + offset, raw + offset + 32);
+    offset += 32;
+    block.header.merkle_root.assign(raw + offset, raw + offset + 32);
+    offset += 32;
+    block.header.timestamp = crypto::read_le_u32(raw + offset);
+    offset += 4;
+    block.header.difficulty_bits = crypto::read_le_u32(raw + offset);
+    offset += 4;
+    block.header.nonce = crypto::read_le_u32(raw + offset);
+    offset += 4;
+
+    need(1);
+    const uint64_t tx_count = crypto::read_compact_size(raw, offset);
+    if (tx_count > (1u << 20)) {
+        throw std::runtime_error("block: transaction count out of range");
+    }
+    for (uint64_t i = 0; i < tx_count; ++i) {
+        // Consensus requires transaction 0 to be the coinbase, and a coinbase
+        // never carries a witness. Letting it read one would consume the first
+        // byte of the transaction that follows.
+        block.transactions.push_back(
+            Transaction::deserialize(raw, data.size(), offset, i != 0));
+    }
+
+    return block;
+}
+
 std::vector<uint8_t> Block::compute_merkle_root() const {
     if (transactions.empty()) {
         return std::vector<uint8_t>(32, 0);

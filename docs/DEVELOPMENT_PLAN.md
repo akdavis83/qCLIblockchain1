@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-Build a small standalone QTC Protocol CLI in C++ to prove the blockchain protocol works end-to-end (blocks, transactions, UTXOs, PQ signatures, addresses, mining) before porting into BitcoinII-Core. The existing QTC-Wallet stays as the reference wallet and test-vector producer. PQNativeConcept becomes the research archive.
+Build a small standalone QTC Protocol CLI in C++ to prove the blockchain protocol works end-to-end (blocks, transactions, UTXOs, PQ signatures, addresses, mining) before porting into BitcoinII-Core. The existing QTC-Wallet stays as an EXTERNAL REFERENCE: the address/key specification and test-vector producer, not a runtime dependency. QTC Core builds standalone and carries its own internal wallet (Day 6 Phase 1). PQNativeConcept becomes the research archive.
 
 ## Architecture
 
@@ -179,7 +179,7 @@ submitblock
 
 ## Sprint 4 — QTC-Wallet Compatibility
 
-- Replace internal wallet with actual QTC-Wallet
+- Confirm the internal QTC Core wallet interoperates with the external reference wallet
 - Test: QTC-Wallet generates address → QTC Node recognizes it
 - Test: QTC-Wallet signs → QTC Node verifies with ML-DSA
 - Test: QTC Node creates UTXO → QTC-Wallet sees it
@@ -213,7 +213,7 @@ Deferred to `future/` directory:
 |------------|------|
 | QTC-Protocol (this project) | Protocol laboratory — prove the protocol |
 | QTC-Core (future) | BitcoinII-derived production node |
-| QTC-Wallet (existing) | Reference wallet + test vectors |
+| QTC-Wallet (external) | Reference specification + cross-check oracle only |
 | PQNativeConcept (existing) | Research archive |
 
 ## Build Instructions

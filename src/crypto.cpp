@@ -2,6 +2,15 @@
 #include <cstring>
 #include <stdexcept>
 
+// Vendored PQClean FIPS-202 (SHA3-256 / SHAKE256). The header has no
+// extern "C" guard and #defines sha3_256/shake256 onto namespaced symbols, so
+// both are neutralised here to keep this file's own names intact.
+extern "C" {
+#include "fips202.h"
+}
+#undef sha3_256
+#undef shake256
+
 namespace qtc {
 namespace crypto {
 
@@ -177,6 +186,36 @@ std::vector<uint8_t> double_sha256(const uint8_t* data, size_t len) {
 
 std::vector<uint8_t> double_sha256(const std::vector<uint8_t>& data) {
     return double_sha256(data.data(), data.size());
+}
+
+std::vector<uint8_t> sha3_256(const uint8_t* data, size_t len) {
+    uint8_t digest[32];
+    pqcrystals_dilithium_fips202_ref_sha3_256(digest, data, len);
+    return std::vector<uint8_t>(digest, digest + 32);
+}
+
+std::vector<uint8_t> sha3_256(const std::vector<uint8_t>& data) {
+    return sha3_256(data.data(), data.size());
+}
+
+std::vector<uint8_t> shake256(size_t outlen, const std::vector<uint8_t>& data) {
+    return shake256_expand(outlen, {data});
+}
+
+std::vector<uint8_t> shake256_expand(size_t outlen,
+                                     const std::vector<std::vector<uint8_t>>& parts) {
+    if (outlen == 0) throw std::invalid_argument("shake256_expand: outlen must be non-zero");
+
+    keccak_state state;
+    shake256_init(&state);
+    for (const auto& part : parts) {
+        shake256_absorb(&state, part.data(), part.size());
+    }
+    shake256_finalize(&state);
+
+    std::vector<uint8_t> out(outlen);
+    shake256_squeeze(out.data(), outlen, &state);
+    return out;
 }
 
 // ============================================================

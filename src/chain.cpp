@@ -1,4 +1,8 @@
 #include "chain.h"
+
+#include <cstdio>
+#include <cstdlib>
+#include <iterator>
 #include "crypto.h"
 #include "consensus.h"
 #include <fstream>
@@ -111,9 +115,18 @@ bool Chain::add_block(const Block& block) {
         }
     }
     
-    // Check PoW
+// Check PoW
     if (!block.validate_pow()) {
         std::cerr << "Block rejected: PoW invalid\n";
+        return false;
+    }
+
+    // Enforce the block size limit. With a full ML-DSA-65 witness on every
+    // transaction this is the only guard against unbounded blocks.
+    const size_t block_size = block.serialize().size();
+    if (block_size > MAX_BLOCK_SIZE) {
+        std::cerr << "Block rejected: " << block_size << " bytes exceeds the "
+                  << MAX_BLOCK_SIZE << " byte limit\n";
         return false;
     }
     
@@ -260,30 +273,124 @@ const UTXOSet& Chain::utxo_set() const {
     return utxo_set_;
 }
 
-bool Chain::save(const std::string& filepath) const {
-    std::ofstream out(filepath);
-    if (!out) return false;
-    
-    out << "# QTC Chain State (development format)" << std::endl;
-    out << "network=" << static_cast<int>(network_) << std::endl;
-    out << "height=" << (blocks_.size() - 1) << std::endl;
-    out << "utxo_count=" << utxo_set_.size() << std::endl;
-    
+std::string Chain::block_path(const std::string& datadir, uint32_t height) {
+    char name[32];
+    std::snprintf(name, sizeof(name), "blocks/%08u.dat", height);
+    return datadir + "/" + name;
+}
+
+bool Chain::has_saved_state(const std::string& datadir) {
+    std::ifstream in(datadir + "/chainstate");
+    return static_cast<bool>(in);
+}
+
+bool Chain::save(const std::string& datadir) const {
+    if (blocks_.empty()) return false;
+
+    std::string mkdir_cmd = "mkdir -p '" + datadir + "/blocks'";
+    if (std::system(mkdir_cmd.c_str()) != 0) return false;
+
     for (size_t i = 0; i < blocks_.size(); ++i) {
-        out << "block_" << i << "_hash=" << blocks_[i].header.hash_hex() << std::endl;
-        out << "block_" << i << "_timestamp=" << blocks_[i].header.timestamp << std::endl;
-        out << "block_" << i << "_nonce=" << blocks_[i].header.nonce << std::endl;
-        out << "block_" << i << "_txcount=" << blocks_[i].transactions.size() << std::endl;
+        const auto bytes = blocks_[i].serialize();
+        std::ofstream out(block_path(datadir, static_cast<uint32_t>(i)),
+                          std::ios::binary);
+        if (!out) return false;
+        out.write(reinterpret_cast<const char*>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+        if (!out) return false;
     }
-    
+
+    std::ofstream state(datadir + "/chainstate");
+    if (!state) return false;
+    state << "network=" << static_cast<int>(network_) << "\n";
+    state << "height=" << (blocks_.size() - 1) << "\n";
+    state << "tip=" << blocks_.back().header.hash_hex() << "\n";
+    state << "difficulty_bits=" << blocks_.back().header.difficulty_bits << "\n";
     return true;
 }
 
-bool Chain::load(const std::string& filepath) {
-    std::ifstream in(filepath);
-    if (!in) return false;
-    
-    init(network_);
+bool Chain::load(const std::string& datadir) {
+    std::ifstream state(datadir + "/chainstate");
+    if (!state) return false;
+
+    uint32_t stored_network = 0;
+    uint32_t stored_height = 0;
+    std::string stored_tip;
+    std::string line;
+    while (std::getline(state, line)) {
+        auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = line.substr(0, eq);
+        const std::string value = line.substr(eq + 1);
+        if (key == "network") stored_network = std::stoul(value);
+        else if (key == "height") stored_height = std::stoul(value);
+        else if (key == "tip") stored_tip = value;
+    }
+
+    if (static_cast<Network>(stored_network) != network_) {
+        std::cerr << "Chain state network does not match the requested network\n";
+        return false;
+    }
+    if (blocks_.size() > 1) {
+        std::cerr << "Chain already holds blocks; refusing to load over them\n";
+        return false;
+    }
+
+    std::vector<Block> loaded;
+    loaded.reserve(static_cast<size_t>(stored_height) + 1);
+
+    for (uint32_t i = 0; i <= stored_height; ++i) {
+        std::ifstream in(block_path(datadir, i), std::ios::binary);
+        if (!in) {
+            std::cerr << "Missing block file for height " << i << "\n";
+            return false;
+        }
+        std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                    std::istreambuf_iterator<char>());
+        try {
+            loaded.push_back(Block::deserialize(bytes));
+        } catch (const std::exception& e) {
+            std::cerr << "Block " << i << " failed to deserialize: " << e.what() << "\n";
+            return false;
+        }
+    }
+
+    if (loaded.empty()) {
+        std::cerr << "Chain state contains no blocks\n";
+        return false;
+    }
+    if (loaded.front().header.hash_hex() !=
+        Block::create_regtest_genesis().header.hash_hex()) {
+        std::cerr << "Stored genesis does not match this network's genesis\n";
+        return false;
+    }
+    if (!stored_tip.empty() && loaded.back().header.hash_hex() != stored_tip) {
+        std::cerr << "Stored tip hash does not match the last block\n";
+        return false;
+    }
+
+    // Re-verify rather than trusting the files, then rebuild the UTXO set.
+    for (size_t i = 1; i < loaded.size(); ++i) {
+        if (loaded[i].header.prev_block_hash != loaded[i - 1].header.hash()) {
+            std::cerr << "Block " << i << " does not link to its predecessor\n";
+            return false;
+        }
+        if (!loaded[i].validate_pow()) {
+            std::cerr << "Block " << i << " has invalid proof of work\n";
+            return false;
+        }
+        if (loaded[i].header.merkle_root != loaded[i].compute_merkle_root()) {
+            std::cerr << "Block " << i << " merkle root mismatch\n";
+            return false;
+        }
+    }
+
+    blocks_ = std::move(loaded);
+    utxo_set_.clear();
+    for (size_t i = 0; i < blocks_.size(); ++i) {
+        utxo_set_.connect_block(blocks_[i].transactions, static_cast<uint32_t>(i));
+    }
+    initialized_ = true;
     return true;
 }
 

@@ -49,9 +49,13 @@ public:
     UTXOSet& utxo_set();
     const UTXOSet& utxo_set() const;
 
-    // Save / load chain state (JSON-based for development)
-    bool save(const std::string& filepath) const;
-    bool load(const std::string& filepath);
+    // Persistence. Blocks are stored individually under <datadir>/blocks/ and the
+    // tip is recorded in <datadir>/chainstate. load() re-verifies every block and
+    // rebuilds the UTXO set rather than trusting the stored data.
+    bool save(const std::string& datadir) const;
+    bool load(const std::string& datadir);
+    static bool has_saved_state(const std::string& datadir);
+    static std::string block_path(const std::string& datadir, uint32_t height);
 
 private:
     Network network_;

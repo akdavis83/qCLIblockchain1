@@ -1,10 +1,24 @@
 #include "transaction.h"
 #include "crypto.h"
+#include "pq_crypto.h"
 #include "consensus.h"
 #include <cstring>
 #include <stdexcept>
 
 namespace qtc {
+
+namespace {
+
+void require_bytes(size_t offset, size_t need, size_t len) {
+    if (offset > len || need > len - offset) {
+        throw std::runtime_error("transaction: truncated encoding");
+    }
+}
+
+// Guards against a hostile CompactSize count causing a huge allocation loop.
+constexpr uint64_t kMaxTxElements = 1u << 20;
+
+} // namespace
 
 // ============================================================
 // OutPoint
@@ -21,7 +35,8 @@ std::vector<uint8_t> OutPoint::serialize() const {
     return result;
 }
 
-OutPoint OutPoint::deserialize(const uint8_t* data, size_t& offset) {
+OutPoint OutPoint::deserialize(const uint8_t* data, size_t len, size_t& offset) {
+    require_bytes(offset, 36, len);
     OutPoint out;
     out.txid.resize(32);
     std::memcpy(out.txid.data(), data + offset, 32);
@@ -60,13 +75,16 @@ std::vector<uint8_t> TxInput::serialize() const {
     return result;
 }
 
-TxInput TxInput::deserialize(const uint8_t* data, size_t& offset) {
+TxInput TxInput::deserialize(const uint8_t* data, size_t len, size_t& offset) {
     TxInput input;
-    input.prevout = OutPoint::deserialize(data, offset);
+    input.prevout = OutPoint::deserialize(data, len, offset);
+    require_bytes(offset, 1, len);
     uint64_t script_len = crypto::read_compact_size(data, offset);
+    require_bytes(offset, script_len, len);
     input.script.resize(script_len);
     std::memcpy(input.script.data(), data + offset, script_len);
     offset += script_len;
+    require_bytes(offset, 4, len);
     input.sequence = crypto::read_le_u32(data + offset);
     offset += 4;
     return input;
@@ -86,11 +104,14 @@ std::vector<uint8_t> TxOutput::serialize() const {
     return result;
 }
 
-TxOutput TxOutput::deserialize(const uint8_t* data, size_t& offset) {
+TxOutput TxOutput::deserialize(const uint8_t* data, size_t len, size_t& offset) {
     TxOutput output;
+    require_bytes(offset, 8, len);
     output.amount = crypto::read_le_u64(data + offset);
     offset += 8;
+    require_bytes(offset, 1, len);
     uint64_t script_len = crypto::read_compact_size(data, offset);
+    require_bytes(offset, script_len, len);
     output.script.resize(script_len);
     std::memcpy(output.script.data(), data + offset, script_len);
     offset += script_len;
@@ -147,41 +168,151 @@ std::vector<uint8_t> Transaction::serialize() const {
     return result;
 }
 
-Transaction Transaction::deserialize(const uint8_t* data, size_t& offset) {
+Transaction Transaction::deserialize(const uint8_t* data, size_t len, size_t& offset,
+                                     bool allow_witness) {
     Transaction tx;
-    
+
+    require_bytes(offset, 4, len);
     tx.version = crypto::read_le_u32(data + offset);
     offset += 4;
-    
+
+    require_bytes(offset, 1, len);
     uint64_t input_count = crypto::read_compact_size(data, offset);
+    if (input_count > kMaxTxElements) {
+        throw std::runtime_error("transaction: input count out of range");
+    }
     for (uint64_t i = 0; i < input_count; ++i) {
-        tx.inputs.push_back(TxInput::deserialize(data, offset));
+        tx.inputs.push_back(TxInput::deserialize(data, len, offset));
     }
-    
+
+    require_bytes(offset, 1, len);
     uint64_t output_count = crypto::read_compact_size(data, offset);
-    for (uint64_t i = 0; i < output_count; ++i) {
-        tx.outputs.push_back(TxOutput::deserialize(data, offset));
+    if (output_count > kMaxTxElements) {
+        throw std::runtime_error("transaction: output count out of range");
     }
-    
+    for (uint64_t i = 0; i < output_count; ++i) {
+        tx.outputs.push_back(TxOutput::deserialize(data, len, offset));
+    }
+
+    require_bytes(offset, 4, len);
     tx.locktime = crypto::read_le_u32(data + offset);
     offset += 4;
-    
-    // PQ witness data (if present)
-    // NOTE: Day 3 deserialization only parses unsigned transactions.
-    // PQ witness parsing (sig_algorithm_id, public_key, signature) will be
-    // implemented in Day 5 when liboqs is linked. For now, witness data
-    // after locktime is not parsed. Do not use this for signed transactions.
-    if (offset < SIZE_MAX) {
-        // Witness parsing would go here in Day 5
-        // For now, we only deserialize the unsigned portion
+
+    // PQ witness follows locktime: algorithm id, then CompactSize-prefixed
+    // public key and signature. Absent when the algorithm id is 0.
+    if (allow_witness && offset < len && data[offset] != 0) {
+        tx.sig_algorithm_id = data[offset];
+        offset += 1;
+
+        require_bytes(offset, 1, len);
+        uint64_t pk_len = crypto::read_compact_size(data, offset);
+        require_bytes(offset, pk_len, len);
+        tx.public_key.assign(data + offset, data + offset + pk_len);
+        offset += pk_len;
+
+        require_bytes(offset, 1, len);
+        uint64_t sig_len = crypto::read_compact_size(data, offset);
+        require_bytes(offset, sig_len, len);
+        tx.signature.assign(data + offset, data + offset + sig_len);
+        offset += sig_len;
     }
-    
+
     return tx;
 }
 
 Transaction Transaction::deserialize(const std::vector<uint8_t>& data) {
     size_t offset = 0;
-    return deserialize(data.data(), offset);
+    return deserialize(data.data(), data.size(), offset);
+}
+
+std::vector<uint8_t> Transaction::signature_hash(
+        size_t input_index,
+        const std::vector<uint8_t>& prev_script,
+        uint64_t prev_amount) const {
+    if (input_index >= inputs.size()) {
+        throw std::out_of_range("signature_hash: input index out of range");
+    }
+
+    std::vector<uint8_t> preimage;
+    auto append = [&preimage](const std::vector<uint8_t>& bytes) {
+        preimage.insert(preimage.end(), bytes.begin(), bytes.end());
+    };
+
+    append(std::vector<uint8_t>{'Q', 'T', 'C', 'S', 'I', 'G', 'H', '1'});
+
+    auto v32 = crypto::write_le_u32(version);
+    append(v32);
+
+    auto idx = crypto::write_le_u64(static_cast<uint64_t>(input_index));
+    append(idx);
+
+    append(inputs[input_index].prevout.serialize());
+
+    auto amount = crypto::write_le_u64(prev_amount);
+    append(amount);
+
+    auto script_len = crypto::write_compact_size(prev_script.size());
+    append(script_len);
+    append(prev_script);
+
+    auto output_count = crypto::write_compact_size(outputs.size());
+    append(output_count);
+    for (const auto& output : outputs) {
+        auto out_amount = crypto::write_le_u64(output.amount);
+        append(out_amount);
+        auto out_script_len = crypto::write_compact_size(output.script.size());
+        append(out_script_len);
+        append(output.script);
+    }
+
+    auto lock = crypto::write_le_u32(locktime);
+    append(lock);
+
+    append(std::vector<uint8_t>{sig_algorithm_id});
+
+    return crypto::double_sha256(preimage);
+}
+
+bool Transaction::sign_input(size_t input_index,
+                             const std::vector<uint8_t>& prev_script,
+                             uint64_t prev_amount,
+                             const std::vector<uint8_t>& secret_key,
+                             std::string* error_out) {
+    if (inputs.empty() || is_coinbase()) {
+        if (error_out) *error_out = "sign_input: coinbase transactions are not signed";
+        return false;
+    }
+    if (sig_algorithm_id != pq::SIG_ML_DSA_65) {
+        sig_algorithm_id = pq::SIG_ML_DSA_65;
+    }
+
+    auto digest = signature_hash(input_index, prev_script, prev_amount);
+    auto sig = pq::sign_mldsa65(secret_key, digest, error_out);
+    if (sig.empty()) return false;
+    signature = std::move(sig);
+    return true;
+}
+
+pq::SignatureResult Transaction::verify_input(size_t input_index,
+                                             const std::vector<uint8_t>& prev_script,
+                                             uint64_t prev_amount) const {
+    pq::SignatureResult result;
+    if (inputs.empty() || is_coinbase()) {
+        result.error = "verify_input: coinbase transactions carry no witness";
+        return result;
+    }
+    if (sig_algorithm_id != pq::SIG_ML_DSA_65) {
+        result.error = "unsupported signature algorithm id " +
+                       std::to_string(sig_algorithm_id);
+        return result;
+    }
+    if (public_key.empty() || signature.empty()) {
+        result.error = "transaction is not signed";
+        return result;
+    }
+
+    auto digest = signature_hash(input_index, prev_script, prev_amount);
+    return pq::verify_mldsa65(public_key, digest, signature);
 }
 
 std::vector<uint8_t> Transaction::txid() const {
@@ -277,6 +408,13 @@ uint64_t Transaction::total_output() const {
 namespace script {
 
 std::vector<uint8_t> for_address(const std::string& address) {
+    // A bech32m qtc/tqtc address becomes a post-quantum witness program script.
+    // Everything else falls back to the dev format.
+    if (address.rfind("qtc1", 0) == 0 || address.rfind("tqtc1", 0) == 0) {
+        auto pq_script = for_qtc_address(address);
+        if (!pq_script.empty()) return pq_script;
+    }
+
     std::vector<uint8_t> script;
     script.push_back(DEV_MARKER);
     for (char c : address) {
@@ -292,6 +430,34 @@ std::string address_from(const std::vector<uint8_t>& script) {
         addr += static_cast<char>(script[i]);
     }
     return addr;
+}
+
+std::vector<uint8_t> for_witness_program(uint8_t witness_version,
+                                         uint8_t algo_id,
+                                         const std::vector<uint8_t>& program) {
+    std::vector<uint8_t> script;
+    script.push_back(PQ_MARKER);
+    script.push_back(witness_version);
+    script.push_back(algo_id);
+    script.insert(script.end(), program.begin(), program.end());
+    return script;
+}
+
+std::vector<uint8_t> for_qtc_address(const std::string& address) {
+    auto decoded = pq::decode_address(address);
+    if (!decoded.valid) return {};
+    if (decoded.program.size() != pq::WITNESS_PROGRAM_SIZE) return {};
+    return for_witness_program(decoded.witness_version, pq::SIG_ML_DSA_65,
+                               decoded.program);
+}
+
+bool is_pq_script(const std::vector<uint8_t>& script) {
+    return script.size() == 4 + pq::WITNESS_PROGRAM_SIZE && script[0] == PQ_MARKER;
+}
+
+std::vector<uint8_t> witness_program_from(const std::vector<uint8_t>& script) {
+    if (!is_pq_script(script)) return {};
+    return std::vector<uint8_t>(script.begin() + 4, script.end());
 }
 
 bool is_dev_script(const std::vector<uint8_t>& script) {
